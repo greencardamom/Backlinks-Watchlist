@@ -1,0 +1,649 @@
+#!/bin/awk -f
+BEGIN{
+# ====================================================================================== #
+#
+# Backlinks Watchlist - monitor articles, templates etc.. on Wikipedia and email
+#                              when they are added / deleted to other articles.
+#
+# Dependencies: GNU awk 4.0+
+#               POSIX grep such as GNU (older systems try fgrep)
+#
+# Install:  1. Create a directory called "bw". Save this file there, name it "bw" and 
+#                set executable ("chmod 755 bw")
+#
+#           2. Change the first line #!/.. path to where GNU awk is located on your system. 
+#
+#           3. Set the following configuration variables G["path"] (directory where this file is) 
+#               and G["email"] (an email address to send alerts):
+
+G["path"]  = "/home/yourname/bw/"
+G["email"] = "yourname@localhost"
+
+#           4. Create bw.cfg containing a list of "entities" to monitor. Example:
+#
+#		 Template:Librivox book
+#		 User talk:Jimbo Wales
+#		 Wikipedia:Articles for deletion/George Zimmerman
+#		 File:Gerald Stanley Lee at his Driftwood Desk 8-18-1941.jpg
+#		 etc..
+#
+#	    5. Set default backlink types. The below G["types"] string means only article namespace backlinks are monitored.
+#               In other words, if a given backlink is not an article page (such as a Talk page or Category), it will be ignored. 
+#               If you're happy with this do nothing. 
+#               However, if you want to monitor article backlinks + User talk page backlinks, remove the section
+#                   |^User talk: 
+#               from the G["types"] string. To monitor all backlink types, set G["types"] = "ALL"
+
+G["types"] = "(^Talk:|^Wikipedia:|^Wikipedia talk:|^Template:|^Template talk:|^Portal:|^Portal talk:|^User:|^User talk:|^File:|^File talk:|^MediaWiki:|^MediaWiki talk:|^Help:|^Help talk:|^Category:|^Category talk:|^Portal:|^Portal talk:|^Book:|^Book talk:|^Draft:|^Draft talk:|^TimedText:|^TimedText talk:|^Module:|^Module talk:)"
+# G["types"] = "ALL"
+
+#           6. You can also customize backlink types on a per-entity basis. If set, will take precedance over 
+#               the default setting in step 5. for that entity only. For example to monitor ALL for 
+#               "Template:Gutenberg author", set T below.
+#               You can add multiple T lines one for each entity. 
+
+# T["Template:Gutenberg author"] = "ALL"
+# T["Template:Internet Archive"] = "(^Portal:)"
+
+#               The second example means that all backlinks types except those in the Portal: namespace will be 
+#               monitored for Template:Internet Archive
+#
+#           7. Test by running "./bw" 
+#                If trouble, set G["debug"] = "yes"  
+
+G["debug"] = "no"
+
+#           8. Add to crontab. Check daily or whenever desired:
+# 		 10 6 * * * /home/myaccount/bw/bw >> /dev/null 2>&1            
+#              The crontab also needs the following set at the top (if not already):
+#                SHELL=/bin/sh  
+#                PATH=/sbin:/bin:/usr/sbin:/usr/local/bin:/usr/bin 
+#                MAILTO=myaccount@localhost
+#                LANG=en_US.UTF-8
+#                LC_COLLATE=en_US.UTF-8
+#              Without these the results of bw will be intermittent or not work. LANG and LC_COLATE
+#              can be whatever your location is, this example is the US. SHELL and PATH can be whatever
+#              your shell and path are.
+#
+#            9. Set an API agent string. Can be whatever, typically your contact info and name of program.
+
+G["api agent"] = "Backlinks Watchlist (User:Green_Cardamom on en)"
+
+#
+# Copyright (c) User:Green Cardamom (on en.wikipeda.org)
+# April 2015
+# License: MIT 
+#
+# ====================================================================================== #
+
+        G["files_system"] = "grep mail cp rm mv"
+        G["files_local"]  = "bw bw.cfg"
+        G["cfgfile"]      = "bw.cfg"
+        G["max"]          = 100         # Max changes to include in an email alert
+
+        if ( substr(G["path"],length(G["path"]) ) != "/")
+            G["path"] = G["path"] "/"
+
+        setup(G["files_system"], G["files_local"], G["path"])
+
+        main(sprintf("%s%s",G["path"],G["cfgfile"]))
+}
+
+function main(cfgfile		,V ,name) {
+
+        while ((getline name < cfgfile) > 0) {
+
+            delete V
+
+            V["newflag"] = 0
+            V["name"]  = strip(name)
+            G["name"]  = V["name"]
+            V["fname"] = V["name"]
+            gsub("/", "-", V["fname"])  
+            V["oldtxt"] = G["path"] V["fname"] ".old"
+            V["otptxt"] = G["path"] V["fname"] ".otp" 
+            V["newtxt"] = G["path"] V["fname"] ".new"
+            V["addtxt"] = G["path"] V["fname"] ".add"
+            V["subtxt"] = G["path"] V["fname"] ".sub"
+            V["emailtxt"] = sprintf("  Backlinks Watchlist\n  ------------------------------\n")
+
+            if ( file_exists(V["oldtxt"]) )
+                sys2var(sprintf("cp -- \"%s\" \"%s\"", V["oldtxt"], V["otptxt"]))
+            if ( file_exists(V["newtxt"]) ) {
+                sys2var(sprintf("mv -- \"%s\" \"%s\"", V["newtxt"], V["oldtxt"])) }
+            else {                 # New entity 
+                if( entity_exists(V["name"]) ) {
+                    printf("") > V["oldtxt"]
+                    close(V["oldtxt"]) }
+                else                 
+                    continue
+            }
+          
+            if ( ! backlinks(V["name"], V["newtxt"]) ) {  # entity exists but has 0 total backlinks. Do nothing (restore files)
+                if ( file_exists(V["newtxt"]) ) {
+                    sys2var(sprintf("mv -- \"%s\" \"%s\"", V["oldtxt"], V["newtxt"]))  
+                    sys2var(sprintf("mv -- \"%s\" \"%s\"", V["otptxt"], V["oldtxt"]))  }
+                else                                      # first run has 0 backlinks, remove 0-length oldtxt
+                    sys2var(sprintf("rm -r \"%s\"", V["oldtxt"]))
+                continue }
+            else {
+                if ( file_exists(V["otptxt"]) ) { # all is good, cleanup 
+                    close(V["otptxt"])
+                    sys2var(sprintf("rm -r \"%s\"", V["otptxt"]))
+                }
+            }
+              
+            V["additions"]    = sys2var(sprintf("grep -vxFc -f \"%s\" -- \"%s\"", V["oldtxt"], V["newtxt"]))
+            V["subtractions"] = sys2var(sprintf("grep -vxFc -f \"%s\" -- \"%s\"", V["newtxt"], V["oldtxt"]))
+
+            if ( V["additions"] ) {
+              V["newflag"] = 1
+              V["emailtxt"] = V["emailtxt"] sprintf("  %s new backlinks for %s\n", V["additions"], V["name"]) 
+            }
+            if (V["subtractions"] ) {
+                V["newflag"] = 1
+                V["emailtxt"] = V["emailtxt"] sprintf("  %s deleted backlinks for %s\n", V["subtractions"], V["name"])
+            }
+
+            if ( V["additions"] ) {
+                if ( V["additions"] < G["max"] ) {
+                    V["emailtxt"] = V["emailtxt"] sprintf("\n  Additions (added to %s ):\n\n", V["addtxt"])
+                    V["out"] = sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", V["oldtxt"], V["newtxt"]))
+                    V["emailtxt"] = V["emailtxt"] V["out"] "\n"
+                    print V["out"] >> V["addtxt"] }
+                else {
+                    V["emailtxt"] = V["emailtxt"] sprintf("\n  Additions over %s\n   List not sent in email nor added to %s\n   To see changes:\n\n", G["max"], V["addtxt"])
+                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" \"%s\"\n", V["oldtxt"], V["newtxt"])
+                }
+            }        
+            if ( V["subtractions"] ) {
+                if ( V["subtractions"] < G["max"] ) {
+                    V["emailtxt"] = V["emailtxt"] sprintf("\n  Deletions (added to %s ):\n\n", V["subtxt"])
+                    V["out"] = sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", V["newtxt"], V["oldtxt"]))
+                    V["emailtxt"] = V["emailtxt"] V["out"] "\n"
+                    print V["out"] >> V["subtxt"] }
+                else {
+                    V["emailtxt"] = V["emailtxt"] sprintf("\n  Deletions over %s\n   List not sent in email nor added to %s\n   To see changes:\n\n", G["max"], V["subtxt"])
+                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" \"%s\"\n", V["newtxt"], V["oldtxt"])
+                }
+            }        
+
+            if ( V["newflag"] ) {
+                close(V["addtxt"])
+                close(V["subtxt"])
+                V["command"] = sprintf("mail -s \"New Backlinks at Wikipedia (%s)\" -- %s", V["name"], G["email"])
+                print V["emailtxt"] | V["command"]
+                close(V["command"])
+            }
+        }   
+}
+
+#
+# backlinks - backlinks for a Wikipedia page (article, Template:, User:, Category:, etc..)
+#      
+#  example: backlinks("Template:Gutenberg author", "out.txt") 
+#           where "out.txt" is the name of a file to save the list to.
+#
+#  return 0 if no links found (0 may or may not mean page exists, see entity_exists() )
+#
+function backlinks(entity, outfile	,url, method, jsonin, jsonout, continuecode, b, c, i, x) {
+
+	gsub(" ","_",entity)  
+
+        if ( entity ~ "^Template:") {
+            method = "eicontinue"  # transcluded links
+            url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&continue=&eilimit=500&format=json&utf8=1&maxlag=5" 
+        } else {
+            method = "blcontinue"  # normal links
+            url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=&blfilterredir=nonredirects&format=json&utf8=1&maxlag=5"
+        }
+
+        jsonin = awget(url)
+        jsonout = json2var(jsonin)
+        continuecode = getcontinue(jsonin, method)
+
+        while ( continuecode ) {
+
+            if ( method == "eicontinue" ) 
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&eilimit=500&continue=-||&eicontinue=" continuecode "&format=json&utf8=1&maxlag=5"
+            if ( method == "blcontinue" ) 
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=-||&blcontinue=" continuecode "&blfilterredir=nonredirects&format=json&utf8=1&maxlag=5"
+
+            jsonin = awget(url)
+            jsonout = jsonout "\n" json2var(jsonin)
+            continuecode = getcontinue(jsonin, method)
+        }
+
+       # Uniq the list of names since the API returns duplicates (by design) when using &blredirect
+        c = split(jsonout, b, "\n")
+        jsonout = ""
+        while (i++ < c) {
+            if(x[b[i]] == "") 
+                x[b[i]] = b[i]
+        }
+        delete b
+        jsonout = join2(x,"\n")
+
+        print jsonout > outfile
+        close(outfile)
+        return length(jsonout)
+
+}
+function getcontinue(jsonin, method	,re,a,b,c) {
+
+	# "continue":{"blcontinue":"0|20304297","continue"
+
+        re = "\"continue\"[:][{]\"" method "\"[:]\"[^\"]*\""
+        match(jsonin, re, a)
+        split(a[0], b, "\"")
+        
+        if ( length(b[6]) > 0) 
+            return b[6]
+        return 0                  
+}
+
+#
+# entity_exists - see if a page on Wikipedia exists
+#   eg. if ( ! entity_exists("Gutenberg author") ) print "Unknown page"
+#
+function entity_exists(entity	,url,jsonin) {
+
+        gsub(" ","_",entity)
+        url = "http://en.wikipedia.org/w/api.php?action=query&titles=" entity "&format=json"
+        jsonin = awget(url)
+        if(jsonin ~ "\"missing\"") 
+          return 0
+        return 1
+}
+
+
+#
+# Check for existence of needed programs and files.
+#   
+function setup(files_system, files_local, b_path) {
+
+        if ( ! files_verify("ls","",b_path) ) {
+            printf("Unable to find ls. Please ensure your crontab has paths set eg.:PATH=/sbin:/bin:/usr/sbin:/usr/local/bin:/usr/bin\n")
+            exit          
+        }
+        if ( ! sys2var(sprintf("ls -d %s",b_path)) ) {
+            printf("Unable to find directory %s\nPlease configure path in the first lines of the source file.\n",b_path)
+            exit
+        }
+        if ( ! files_verify(files_system, files_local, b_path) ) {
+            exit
+        }
+}
+
+#
+# Verify existence of programs in path, and files in a local directory
+#   eg. files_verify("diff uniq sort", "tbm.cfg", "/home/green")
+# first parameter is list of files needed in path
+# second (optional) is needed files in local directory.
+# third (optional) is the local dir.
+# Return 0 if fail. 
+#
+function files_verify(files_system, files_local, localdir,	a, i,emailtext,command) {
+
+        emailtext = "\n"
+	missing = 0
+        split(files_system, a, " ")
+        for ( i in a ) {
+            if ( ! sys2var(sprintf("command -v %s",a[i])) ) {
+                missing++
+                print "Abort: command not found in PATH: " a[i] 
+                emailtext = emailtext sprintf("Abort: command not found in PATH: %s\n", a[i])
+            }
+        }
+        if ( files_local && localdir ) {
+            split(files_local, a, " ")
+            if ( substr(localdir,length(localdir)) != "/" )
+                localdir = localdir "/"
+            i = 0
+            for ( i in a ) {
+                if ( ! file_exists(localdir a[i]) ) {
+                    missing++
+                    print "Abort: file not found in " localdir ": " a[i] 
+                    emailtext = emailtext sprintf("Abort: file not found in %s: %s\n", localdir, a[i])
+                }
+            }
+        }
+        if ( missing ) {
+            if ( G["email"] ~ "@" ) {
+                command = sprintf("mail -s \"Error in Backlinks Watchlist\" -- %s", G["email"])
+                print emailtext | command
+                close(command)
+            }
+            return 0
+        }
+        return 1
+}
+
+
+#
+# Run a system command and store result in a variable
+#   eg. googlepage = sys2var("wget -q -O- http://google.com")
+# Supports pipes inside command string. Stderr is sent to null.
+# If command fails return null
+#
+function sys2var(command	,fish, scale, ship) {
+
+         if ( G["debug"] == "yes" ) 
+             print "command="command 
+
+         command = command " 2>/dev/null"
+         while ( (command | getline fish) > 0 ) {
+             if ( ++scale == 1 )
+                 ship = fish
+             else
+                 ship = ship "\n" fish
+         }
+         close(command)
+         return ship
+}
+
+#
+# Check if file exists, even zero-length.
+#   eg. if(! file_exists(filename)) {print "not exist"}
+#
+function file_exists(file    ,line)
+{
+        if ( (getline line < file) == -1 ) {
+                close(file)
+                return 0 }
+        else {
+                close(file)
+                return 1
+        }
+}
+
+#
+# Strip leading/trailing whitespace
+#
+function strip(str)
+{
+        gsub(/^[ \t]+/,"",str) # rm lead/trail whitespace
+        gsub(/[ \t]+$/,"",str)
+        return str
+}
+
+#
+# Merge an array of strings into a single string. Array indice are numbers.
+#
+function join(array, start, end, sep,    result, i)
+{
+
+    result = array[start]
+    for (i = start + 1; i <= end; i++) 
+        result = result sep array[i]
+    return result
+}
+
+#
+# Merge an array of strings into a single string. Array indice are strings.
+#
+function join2(arr, sep         ,i,lobster) {
+
+        for ( lobster in arr ) {
+            if(++i == 1) {
+                result = lobster
+                continue
+            }
+            result = result sep lobster
+        }
+        return result
+}
+
+# ==========================================================================================================
+#
+# awget - replicate "wget -q -O- http://..." in pure gawk
+#   Return the HTML page as a string.
+#   Handles redirects. Adapted for Wikipedia API URL format
+#
+# Credit: Adapted from Peteris Krumins's "get_youtube_vids.awk"
+#  https://code.google.com/p/lawker/source/browse/fridge/gawk/www/get_youtube_vids.awk
+#
+# ==========================================================================================================
+function awget(url   ,urlhost,urlrequest, c,i,a,p,f,j,output, foO, headerS, matches, inetfile, request, loop)
+{
+
+ # Assumes a URL containing standard Wikipedia API URL syntax
+ # eg: http://en.wikipedia.org/w/api.php?action=query...
+
+  split(url, a, "/")
+  urlhost = a[3]                                # en.wikipedia.org
+  split(url, a, "[?]")
+  urlrequest = "/w/api.php?" a[2]		# /w/api.php?action=query... <-- Custom for MediaWiki API
+
+  inetfile = "/inet/tcp/0/" urlhost "/80"
+  request = "GET " urlrequest " HTTP/1.0\r\n"   # 1.1 doesn't work due to Transfer-Encoding: chunked
+  request = request "Host: " urlhost "\r\n"
+  request = request "User-Agent: " G["api agent"] "\r\n"  #           <-- Custom API Agent string
+#  request = request "Accept-Encoding: gzip \r\n"         #           <-- To Do           
+  request = request "Cache-Control: no-cache \r\n"
+  request = request "\r\n\r\n"
+
+  do {
+    get_headers(inetfile, request, headerS)
+    if ("Location" in headerS) {
+      close(inetfile)
+      if (match(headerS["Location"], /http:\/\/([^\/]+)(\/.+)/, matches)) {
+        foO["InetFile"] = "/inet/tcp/0/" matches[1] "/80"
+        foO["Host"]     = matches[1]
+        foO["Request"]  = matches[2]
+      }
+      else {
+        foO["InetFile"] = ""
+        foO["Host"]     = ""
+        foO["Request"]  = ""
+      }
+      inetfile = foO["InetFile"]
+      request  = "GET " foO["Request"] " HTTP/1.0\r\n"
+      request  = request "Host: " foO["Host"] "\r\n"
+      request  = request "User-Agent: " G["api agent"] "\r\n"  #           <-- Custom API Agent string
+      request  = request "Cache-Control: no-cache \r\n"
+      request  = request "\r\n\r\n"
+      if (inetfile == "") {
+        print "Failed 1 (" url "), got caught in Location loop!" > "/dev/stderr"
+        return -1
+      }
+    }
+    loop++
+  } while (("Location" in headerS) && loop < 5)
+  if (loop == 5) {
+        print "Failed 2 (" url "), got caught in Location loop!" > "/dev/stderr"
+        return -1
+  }
+
+  while ((inetfile |& getline) > 0) {
+    j++
+    output[j] = $0
+  }
+  close(inetfile)
+  if(length(output) == 0)
+    return -1
+  else
+    return join(output, 1, j, "\n")
+}
+
+function get_headers(Inet, Request, headerS) {
+
+    delete headerS
+
+    # save global vars
+    OLD_RS=RS
+
+    print Request |& Inet
+
+    # get the http status response
+    if (Inet |& getline > 0) {
+        headerS["_status"] = $2
+    }
+    else {
+        print "Failed reading from the net. Quitting!"
+        exit 1
+    }
+
+    RS="\r\n"
+    while ((Inet |& getline) > 0) {
+        # we could have used FS=": " to split, but i could not think of a good
+        # way to handle header values which contain multiple ": "
+        # so i better go with a match
+        if (match($0, /([^:]+): (.+)/, Matches)) {
+          headerS[Matches[1]] = Matches[2]
+        }
+        else { break }
+    }
+    RS=OLD_RS
+}
+
+
+# =====================================================================================================
+# JSON parse function. Returns a list of values parsed from json data.
+#
+# Credits: JSON parser derived from JSON.awk
+#          https://github.com/step-/JSON.awk.git        
+#
+# =====================================================================================================
+function json2var(jsonin) {
+
+        TOKEN=""
+        delete TOKENS
+        NTOKENS=ITOKENS=0
+        delete JPATHS
+        NJPATHS=0
+        VALUE=""
+
+        tokenize(jsonin)
+
+        if ( parse() == 0 ) {
+          return join(JPATHS,1,NJPATHS, "\n")
+        }
+}
+function get_token() {
+        TOKEN = TOKENS[++ITOKENS] # for internal tokenize()
+        return ITOKENS < NTOKENS
+}
+function parse_array(a1,   idx,ary,ret) {
+        idx=0
+        ary=""
+        get_token()
+        if (TOKEN != "]") {
+                while (1) {
+                        if (ret = parse_value(a1, idx)) {
+                                return ret
+                        }
+                        idx=idx+1
+                        ary=ary VALUE
+                        get_token()
+                        if (TOKEN == "]") {
+                                break
+                        } else if (TOKEN == ",") {
+                                ary = ary ","
+                        } else {
+                                return 2
+                        }
+                        get_token()
+                }
+        }
+        VALUE=""
+        return 0
+}
+function parse_object(a1,   key,obj) {
+        obj=""
+        get_token()
+        if (TOKEN != "}") {
+                while (1) {
+                        if (TOKEN ~ /^".*"$/) {
+                                key=TOKEN
+                        } else {
+                                #report("string", TOKEN ? TOKEN : "EOF")
+                                return 3
+                        }
+                        get_token()
+                        if (TOKEN != ":") {
+                                #report(":", TOKEN ? TOKEN : "EOF")
+                                return 4
+                        }
+                        get_token()
+                        if (parse_value(a1, key)) {
+                                return 5
+                        }
+                        obj=obj key ":" VALUE
+                        get_token()
+                        if (TOKEN == "}") {
+                                break
+                        } else if (TOKEN == ",") {
+                                obj=obj ","
+                        } else {
+                                #report(", or }", TOKEN ? TOKEN : "EOF")
+                                return 6
+                        }
+                        get_token()
+                }
+        }
+        VALUE=""
+        return 0
+}
+function parse_value(a1, a2,   jpath,ret,x) {
+        jpath=(a1!="" ? a1 "," : "") a2 # "${1:+$1,}$2"
+        if (TOKEN == "{") {
+                if (parse_object(jpath)) {
+                        return 7
+                }
+        } else if (TOKEN == "[") {
+                if (ret = parse_array(jpath)) {
+                        return ret
+        }
+        } else if (TOKEN ~ /^(|[^0-9])$/) {
+                # At this point, the only valid single-character tokens are digits.
+                #report("value", TOKEN!="" ? TOKEN : "EOF")
+                return 9
+        } else {
+                VALUE=TOKEN
+        }
+        if (! (1 == BRIEF && ("" == jpath || "" == VALUE))) {
+                
+                if ( a2 == "\"*\"" || a2 == "\"title\"" ) {     # <-- Customized for MediaWiki API backlinks
+                    x = substr(VALUE, 2, length(VALUE) - 2)
+                    # gsub(/\\"/,"\"",x)                        # convert [William \"Tiger\" Dunlop] -> [William "Tiger" Dunlop]
+                    if ( T[G["name"]] != "" )
+                        gtype = T[G["name"]]
+                    else
+                        gtype = G["types"]
+                    if ( gtype == "ALL" ) {
+                            NJPATHS++
+                            JPATHS[NJPATHS] = x
+                    }
+                    else if ( x !~ gtype ) {
+                        NJPATHS++
+                        JPATHS[NJPATHS] = x
+                    }
+                }
+        }
+        return 0
+}
+function parse(   ret) {
+        get_token()
+        if (ret = parse_value()) {
+                return ret
+        }
+        if (get_token()) {
+                #report("EOF", TOKEN)
+                return 11
+        }
+        return 0
+}
+function tokenize(a1,   pq,pb,ESCAPE,CHAR,STRING,NUMBER,KEYWORD,SPACE) {
+
+        # POSIX character classes (gawk) - contact me for non-[:class:] notation
+        # Replaced regex constant for string constant, see https://github.com/step-/JSON.awk/issues/1
+        SPACE="[[:space:]]+"
+        gsub(/\"[^[:cntrl:]\"\\]*((\\[^u[:cntrl:]]|\\u[0-9a-fA-F]{4})[^[:cntrl:]\"\\]*)*\"|-?(0|[1-9][0-9]*)([.][0-9]*)?([eE][+-]?[0-9]*)?|null|false|true|[[:space:]]+|./, "\n&", a1)
+        gsub("\n" SPACE, "\n", a1)
+        sub(/^\n/, "", a1)
+        ITOKENS=0 # get_token() helper
+        return NTOKENS = split(a1, TOKENS, /\n/)
+}
+
+
