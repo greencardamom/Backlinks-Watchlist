@@ -32,6 +32,8 @@ Installation
 The program is a GNU Awk script. The install instructions and configuation parameters 
 are at the top of the file. It will work on any Unix system that has GNU Awk 4.0+
 
-This program uses the 'MediaWiki Awk API Library' available here:
+Credits
+==================
+Want to use MediaWiki API with Awk? Check out 'MediaWiki Awk API Library' 
 https://github.com/greencardamom/MediaWikiAwkAPI
 
