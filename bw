@@ -76,7 +76,7 @@ G["api agent"] = "Backlinks Watchlist (User:Green_Cardamom on en)"
 #
 # ====================================================================================== #
 
-        G["files_system"] = "grep mail cp rm mv"
+        G["files_system"] = "grep wget mail cp rm mv"
         G["files_local"]  = "bw bw.cfg"
         G["cfgfile"]      = "bw.cfg"
         G["max"]          = 100         # Max changes to include in an email alert
@@ -198,7 +198,7 @@ function backlinks(entity, outfile	,url, method, jsonin, jsonout, continuecode, 
             url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=&blfilterredir=nonredirects&format=json&utf8=1&maxlag=5"
         }
 
-        jsonin = awget(url)
+        jsonin = http2var(url)
         jsonout = json2var(jsonin)
         continuecode = getcontinue(jsonin, method)
 
@@ -209,7 +209,7 @@ function backlinks(entity, outfile	,url, method, jsonin, jsonout, continuecode, 
             if ( method == "blcontinue" ) 
                 url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=-||&blcontinue=" continuecode "&blfilterredir=nonredirects&format=json&utf8=1&maxlag=5"
 
-            jsonin = awget(url)
+            jsonin = http2var(url)
             jsonout = jsonout "\n" json2var(jsonin)
             continuecode = getcontinue(jsonin, method)
         }
@@ -250,7 +250,7 @@ function entity_exists(entity	,url,jsonin) {
 
         gsub(" ","_",entity)
         url = "http://en.wikipedia.org/w/api.php?action=query&titles=" entity "&format=json"
-        jsonin = awget(url)
+        jsonin = http2var(url)
         if(jsonin ~ "\"missing\"") 
           return 0
         return 1
@@ -343,6 +343,15 @@ function sys2var(command	,fish, scale, ship) {
 }
 
 #
+# Webpage to variable
+#
+function http2var(url) {
+
+        return sys2var("wget --no-check-certificate --user-agent=\"" G["api agent"] "\" -q -O- \"" url "\"")
+
+}
+
+#
 # Check if file exists, even zero-length.
 #   eg. if(! file_exists(filename)) {print "not exist"}
 #
@@ -393,110 +402,6 @@ function join2(arr, sep         ,i,lobster) {
         }
         return result
 }
-
-# ==========================================================================================================
-#
-# awget - replicate "wget -q -O- http://..." in pure gawk
-#   Return the HTML page as a string.
-#   Handles redirects. Adapted for Wikipedia API URL format
-#
-# Credit: Adapted from Peteris Krumins's "get_youtube_vids.awk"
-#  https://code.google.com/p/lawker/source/browse/fridge/gawk/www/get_youtube_vids.awk
-#
-# ==========================================================================================================
-function awget(url   ,urlhost,urlrequest, c,i,a,p,f,j,output, foO, headerS, matches, inetfile, request, loop)
-{
-
- # Assumes a URL containing standard Wikipedia API URL syntax
- # eg: http://en.wikipedia.org/w/api.php?action=query...
-
-  split(url, a, "/")
-  urlhost = a[3]                                # en.wikipedia.org
-  split(url, a, "[?]")
-  urlrequest = "/w/api.php?" a[2]		# /w/api.php?action=query... <-- Custom for MediaWiki API
-
-  inetfile = "/inet/tcp/0/" urlhost "/80"
-  request = "GET " urlrequest " HTTP/1.0\r\n"   # 1.1 doesn't work due to Transfer-Encoding: chunked
-  request = request "Host: " urlhost "\r\n"
-  request = request "User-Agent: " G["api agent"] "\r\n"  #           <-- Custom API Agent string
-#  request = request "Accept-Encoding: gzip \r\n"         #           <-- To Do           
-  request = request "Cache-Control: no-cache \r\n"
-  request = request "\r\n\r\n"
-
-  do {
-    get_headers(inetfile, request, headerS)
-    if ("Location" in headerS) {
-      close(inetfile)
-      if (match(headerS["Location"], /http:\/\/([^\/]+)(\/.+)/, matches)) {
-        foO["InetFile"] = "/inet/tcp/0/" matches[1] "/80"
-        foO["Host"]     = matches[1]
-        foO["Request"]  = matches[2]
-      }
-      else {
-        foO["InetFile"] = ""
-        foO["Host"]     = ""
-        foO["Request"]  = ""
-      }
-      inetfile = foO["InetFile"]
-      request  = "GET " foO["Request"] " HTTP/1.0\r\n"
-      request  = request "Host: " foO["Host"] "\r\n"
-      request  = request "User-Agent: " G["api agent"] "\r\n"  #           <-- Custom API Agent string
-      request  = request "Cache-Control: no-cache \r\n"
-      request  = request "\r\n\r\n"
-      if (inetfile == "") {
-        print "Failed 1 (" url "), got caught in Location loop!" > "/dev/stderr"
-        return -1
-      }
-    }
-    loop++
-  } while (("Location" in headerS) && loop < 5)
-  if (loop == 5) {
-        print "Failed 2 (" url "), got caught in Location loop!" > "/dev/stderr"
-        return -1
-  }
-
-  while ((inetfile |& getline) > 0) {
-    j++
-    output[j] = $0
-  }
-  close(inetfile)
-  if(length(output) == 0)
-    return -1
-  else
-    return join(output, 1, j, "\n")
-}
-
-function get_headers(Inet, Request, headerS) {
-
-    delete headerS
-
-    # save global vars
-    OLD_RS=RS
-
-    print Request |& Inet
-
-    # get the http status response
-    if (Inet |& getline > 0) {
-        headerS["_status"] = $2
-    }
-    else {
-        print "Failed reading from the net. Quitting!"
-        exit 1
-    }
-
-    RS="\r\n"
-    while ((Inet |& getline) > 0) {
-        # we could have used FS=": " to split, but i could not think of a good
-        # way to handle header values which contain multiple ": "
-        # so i better go with a match
-        if (match($0, /([^:]+): (.+)/, Matches)) {
-          headerS[Matches[1]] = Matches[2]
-        }
-        else { break }
-    }
-    RS=OLD_RS
-}
-
 
 # =====================================================================================================
 # JSON parse function. Returns a list of values parsed from json data.
