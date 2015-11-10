@@ -1,17 +1,29 @@
 #!/bin/awk -f
 
+# Backlinks Watchlist - monitor articles, templates etc.. on Wikipedia and email
+#                       when they are added / deleted to other articles.
 #
 # Copyright (c) User:Green Cardamom (on en.wikipeda.org)
 # April 2015
 # License: MIT 
 #
+# History:
+#    10 Nov 2015  - Support for G["maxlag"] variable
+#                   Bug fix: broke when maxlag timed out. 
+#                   New debug() function.
+#    25 Aug 2015  - Expanded support for "File:" and "Template:" type backlinks. 
+#                   Re-write backlinks() function
+#                   New uniq() and getbacklinks() function
+#    22 Aug 2015  - Bug fix: missing ")"
+#    19 Aug 2015  - Support for "File:" type backlinks
+#                   Bug fix: broke when maxlag timed out. (fix didn't work see 10 Nov fix)
+#    12 Jun 2015  - Change networking to wget due to MediWiki move to SSL (Gawk lacks SSL)
+#    14 May 2015  - First version.
+#
 
 BEGIN{
 
-# ====================================================================================== #
-#
-# Backlinks Watchlist - monitor articles, templates etc.. on Wikipedia and email
-#                              when they are added / deleted to other articles.
+# ====================== Configuration Variables & Install Instructions ============================== #
 #
 # Dependencies: GNU awk 4.0+
 #               POSIX grep such as GNU (older systems try fgrep)
@@ -56,12 +68,19 @@ G["types"] = "(^Talk:|^Wikipedia:|^Wikipedia talk:|^Template:|^Template talk:|^P
 #               The second example means that all backlinks types except those in the Portal: namespace will be 
 #               monitored for Template:Internet Archive
 #
-#           7. Test by running "./bw" 
-#                If trouble, set G["debug"] = "yes"  
+#           7. Test by running "./bw"
+#                If trouble, set G["debug"] = "yes"  - default output = "debug.out" in current directory
 
 G["debug"] = "no"
+G["debugout"] = G["path"] "/debug.out"
 
-#           8. Add to crontab. Check daily or whenever desired:
+#           8. Maxlag - adjust if too many MediWiki API timeout errors. Default: 5
+#                       documentation: https://www.mediawiki.org/wiki/Manual:Maxlag_parameter
+#
+
+G["maxlag"] = 5
+
+#           9. Add to crontab. Check daily or whenever desired:
 # 		 10 6 * * * /home/myaccount/bw/bw >> /dev/null 2>&1            
 #              The crontab also needs the following set at the top (if not already):
 #                SHELL=/bin/sh  
@@ -73,12 +92,14 @@ G["debug"] = "no"
 #              can be whatever your location is, this example is the US. SHELL and PATH can be whatever
 #              your shell and path are.
 #
-#            9. Set an API agent string. Can be whatever, typically your contact info and name of program.
+#            10. Set an API agent string. Can be whatever, typically your contact info and name of program.
 
 G["api agent"] = "Backlinks Watchlist (User:Green_Cardamom on en)"
 
 #
 # ====================================================================================== #
+
+        debug("==================================")
 
         G["files_system"] = "grep wget mail cp rm mv"
         G["files_local"]  = "bw bw.cfg"
@@ -122,15 +143,19 @@ function main(cfgfile		,V ,name) {
                 else                 
                     continue
             }
-          
-            if ( ! backlinks(V["name"], V["newtxt"]) ) {  # entity exists but has 0 total backlinks. Do nothing (restore files)
-                if ( file_exists(V["newtxt"]) ) {
-                    sys2var(sprintf("mv -- \"%s\" \"%s\"", V["oldtxt"], V["newtxt"]))  
-                    sys2var(sprintf("mv -- \"%s\" \"%s\"", V["otptxt"], V["oldtxt"]))  }
-                else                                      # first run has 0 backlinks, remove 0-length oldtxt
-                    sys2var(sprintf("rm -r \"%s\"", V["oldtxt"]))
-                continue }
-            else {
+        
+            br = backlinks(V["name"], V["newtxt"])
+            debug("raw backlinks = " br)
+  
+            if ( br == 0 || br == "" ) {  # entity exists but has 0 total backlinks. Do nothing (restore files)
+                sys2var(sprintf("mv -- \"%s\" \"%s\"", V["oldtxt"], V["newtxt"]))
+                sys2var(sprintf("mv -- \"%s\" \"%s\"", V["otptxt"], V["oldtxt"]))
+                V["emailtxt"] = V["emailtxt"] "\nNo backlinks found for " G["name"] " - aborting.\n\nPossibly Maxlag exceeded. Try again when API server is less busy or modify G[\"maxlag\"] variable in script."
+                V["command"] = sprintf("mail -s \"Warning: Backlinks at Wikipedia (%s)\" -- %s", V["name"], G["email"])
+                print V["emailtxt"] | V["command"]
+                close(V["command"])
+                continue
+            } else {
                 if ( file_exists(V["otptxt"]) ) { # all is good, cleanup 
                     close(V["otptxt"])
                     sys2var(sprintf("rm -r \"%s\"", V["otptxt"]))
@@ -194,19 +219,21 @@ function backlinks(entity, outfile      ,url, blinks) {
 
         gsub(" ","_",entity)
 
-        url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=&blfilterredir=nonredirects&format=json&utf8=1&maxlag=5"
+        url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=&blfilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
         blinks = getbacklinks(url, entity, "blcontinue") # normal backlinks
 
         if ( entity ~ "^Template:") {    # transclusion backlinks
-            url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&continue=&eilimit=500&format=json&utf8=1&maxlag=5"
+            url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&continue=&eilimit=500&format=json&utf8=1&maxlag=" G["maxlag"]
             blinks = blinks "\n" getbacklinks(url, entity, "eicontinue")
         } else if ( entity ~ "^File:") { # file backlinks
-            url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" entity "&iuredirect&iulimit=250&continue=&iufilterredir=nonredirects&format=json&utf8=1&maxlag=5"
+            url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" entity "&iuredirect&iulimit=250&continue=&iufilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
             blinks = blinks "\n" getbacklinks(url, entity, "iucontinue")
         }
 
         blinks = uniq(blinks)
-        print blinks > outfile
+        if(length(blinks) > 0)
+          print blinks > outfile
+
         close(outfile)
         return length(blinks)
 
@@ -220,11 +247,11 @@ function getbacklinks(url, entity, method,      jsonin, jsonout, continuecode) {
         while ( continuecode ) {
 
             if ( method == "eicontinue" )
-                url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&eilimit=500&continue=-||&eicontinue=" continuecode "&format=json&utf8=1&maxlag=5"
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&eilimit=500&continue=-||&eicontinue=" continuecode "&format=json&utf8=1&maxlag=" G["maxlag"]
             if ( method == "iucontinue" )
-                url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" entity "&iuredirect&iulimit=250&continue=&iufilterredir=nonredirects&format=json&utf8=1&maxlag=5"
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" entity "&iuredirect&iulimit=250&continue=&iufilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
             if ( method == "blcontinue" )
-                url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=-||&blcontinue=" continuecode "&blfilterredir=nonredirects&format=json&utf8=1&maxlag=5"
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=-||&blcontinue=" continuecode "&blfilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
 
             jsonin = http2var(url)
             jsonout = jsonout "\n" json2var(jsonin)
@@ -332,8 +359,7 @@ function files_verify(files_system, files_local, localdir,	a, i,emailtext,comman
 #
 function sys2var(command	,fish, scale, ship) {
 
-         if ( G["debug"] == "yes" ) 
-             print "command="command 
+         debug("command= " command)
 
          command = command " 2>/dev/null"
          while ( (command | getline fish) > 0 ) {
@@ -378,8 +404,10 @@ function uniq(names,    b,c,i,x) {
         c = split(names, b, "\n")
         names = "" # free memory
         while (i++ < c) {
-            if(b[i] ~ "for API usage") # Max lag exceeded. Try again when servers less busy or increase Maxlag variable. See https://www.mediawiki.org/wiki/Manual:Maxlag_parameter.
-                continue
+            if(b[i] ~ "for API usage") { # Max lag exceeded.
+                print "Max lag exceeded for " G["name"] " - aborting. Try again when API servers less busy or increase Maxlag." > "/dev/stderr"
+                return
+            }
             if(b[i] == "")
                 continue
             if(x[b[i]] == "")
@@ -394,8 +422,7 @@ function uniq(names,    b,c,i,x) {
 #
 function strip(str)
 {
-        gsub(/^[ \t]+/,"",str) # rm lead/trail whitespace
-        gsub(/[ \t]+$/,"",str)
+        gsub(/^[[:space:]]+|[[:space:]]+$/,"",str)
         return str
 }
 
@@ -425,6 +452,18 @@ function join2(arr, sep         ,i,lobster) {
         }
         return result
 }
+
+#
+# Print debug to file G["debugout"]
+#
+function debug(str){
+
+    if ( G["debug"] == "yes" ) {
+        print str >> G["debugout"]
+        close(G["debugout"])
+    }
+}
+
 
 # =====================================================================================================
 # JSON parse function. Returns a list of values parsed from json data.
