@@ -1,13 +1,15 @@
 #!/bin/awk -f
 
 # Backlinks Watchlist - monitor articles, templates etc.. on Wikipedia and email
-#                       when they are added / deleted to other articles.
+#                       when they are added-to or deleted-from other articles.
 #
 # Copyright (c) User:Green Cardamom (on en.wikipeda.org)
-# April 2015
+# November 2015
 # License: MIT 
 #
 # History:
+#    19 Nov 2015  - Bug fix: wrongly reports deletions of transcluded entities after a page blank
+#                            due to Wiki database update lags. New functions subtractions(), regstr() and regesc()
 #    10 Nov 2015  - Support for G["maxlag"] variable
 #                   Bug fix: broke when maxlag timed out. 
 #                   New debug() function.
@@ -16,8 +18,8 @@
 #                   New uniq() and getbacklinks() function
 #    22 Aug 2015  - Bug fix: missing ")"
 #    19 Aug 2015  - Support for "File:" type backlinks
-#                   Bug fix: broke when maxlag timed out. (fix didn't work see 10 Nov fix)
-#    12 Jun 2015  - Change networking to wget due to MediWiki move to SSL (Gawk lacks SSL)
+#                   Bug fix: broke when maxlag timed out. (fix didn't work see 10 Nov )
+#    12 Jun 2015  - Change networking agent to wget due to MediWiki conversion to SSL (Gawk lacks SSL)
 #    14 May 2015  - First version.
 #
 
@@ -34,7 +36,7 @@ BEGIN{
 #           2. Change the first line #!/.. path to where GNU awk is located on your system. 
 #
 #           3. Set the following configuration variables G["path"] (directory where this file is) 
-#               and G["email"] (an email address to send alerts):
+#               and G["email"] (an email address to send script output):
 
 G["path"]  = "/home/yourname/bw/"
 G["email"] = "yourname@localhost"
@@ -60,7 +62,7 @@ G["types"] = "(^Talk:|^Wikipedia:|^Wikipedia talk:|^Template:|^Template talk:|^P
 #           6. You can also customize backlink types on a per-entity basis. If set, will take precedance over 
 #               the default setting in step 5. for that entity only. For example to monitor ALL for 
 #               "Template:Gutenberg author", set T below.
-#               You can add multiple T lines one for each entity. 
+#               You can add multiple T lines, one for each entity. 
 
 # T["Template:Gutenberg author"] = "ALL"
 # T["Template:Internet Archive"] = "(^Portal:)"
@@ -80,9 +82,11 @@ G["debugout"] = G["path"] "/debug.out"
 
 G["maxlag"] = 5
 
-#           9. Add to crontab. Check daily or whenever desired:
+#           9. Add bw to your crontab. Check daily or whenever desired:
+#
 # 		 10 6 * * * /home/myaccount/bw/bw >> /dev/null 2>&1            
-#              The crontab also needs the following set at the top (if not already):
+#
+#              The crontab also needs the following (or similar) at the top if not already:
 #                SHELL=/bin/sh  
 #                PATH=/sbin:/bin:/usr/sbin:/usr/local/bin:/usr/bin 
 #                MAILTO=myaccount@localhost
@@ -90,16 +94,18 @@ G["maxlag"] = 5
 #                LC_COLLATE=en_US.UTF-8
 #              Without these the results of bw will be intermittent or not work. LANG and LC_COLATE
 #              can be whatever your location is, this example is the US. SHELL and PATH can be whatever
-#              your shell and path are.
+#              your shell and paths are.
 #
-#            10. Set an API agent string. Can be whatever, typically your contact info and name of program.
+#            10. An API agent string. Can be whatever, typically your contact info and name of program.
 
 G["api agent"] = "Backlinks Watchlist (User:Green_Cardamom on en)"
 
 #
+#           END CONFIGURATION 
+#
 # ====================================================================================== #
-
-        debug("==================================")
+#
+        debug("\n\t\t\t================ " strftime("%Y-%m-%d- %H:%M:%S") " =================")
 
         G["files_system"] = "grep wget mail cp rm mv"
         G["files_local"]  = "bw bw.cfg"
@@ -114,11 +120,13 @@ G["api agent"] = "Backlinks Watchlist (User:Green_Cardamom on en)"
         main(sprintf("%s%s",G["path"],G["cfgfile"]))
 }
 
-function main(cfgfile		,V ,name) {
+function main(cfgfile		,V ,name, br) {
 
         while ((getline name < cfgfile) > 0) {
 
             delete V
+
+            debug("\t======= " name " =======")
 
             V["newflag"] = 0
             V["name"]  = strip(name)
@@ -139,15 +147,18 @@ function main(cfgfile		,V ,name) {
             else {                 # New entity 
                 if( entity_exists(V["name"]) ) {
                     printf("") > V["oldtxt"]
-                    close(V["oldtxt"]) }
+                    printf("") > V["otptxt"]
+                    close(V["oldtxt"]) 
+                    close(V["otptxt"]) }
                 else                 
                     continue
             }
         
             br = backlinks(V["name"], V["newtxt"])
+
             debug("raw backlinks = " br)
   
-            if ( br == 0 || br == "" ) {  # entity exists but has 0 total backlinks. Do nothing (restore files)
+            if ( br == 0 || br == "" ) {  # entity exists but has 0 backlinks or API maxlag timeout. Do nothing (restore files)
                 sys2var(sprintf("mv -- \"%s\" \"%s\"", V["oldtxt"], V["newtxt"]))
                 sys2var(sprintf("mv -- \"%s\" \"%s\"", V["otptxt"], V["oldtxt"]))
                 V["emailtxt"] = V["emailtxt"] "\nNo backlinks found for " G["name"] " - aborting.\n\nPossibly Maxlag exceeded. Try again when API server is less busy or modify G[\"maxlag\"] variable in script."
@@ -158,7 +169,7 @@ function main(cfgfile		,V ,name) {
             } else {
                 if ( file_exists(V["otptxt"]) ) { # all is good, cleanup 
                     close(V["otptxt"])
-                    sys2var(sprintf("rm -r \"%s\"", V["otptxt"]))
+                    sys2var(sprintf("rm -r -- \"%s\"", V["otptxt"]))
                 }
             }
               
@@ -169,10 +180,6 @@ function main(cfgfile		,V ,name) {
               V["newflag"] = 1
               V["emailtxt"] = V["emailtxt"] sprintf("  %s new backlinks for %s\n", V["additions"], V["name"]) 
             }
-            if (V["subtractions"] ) {
-                V["newflag"] = 1
-                V["emailtxt"] = V["emailtxt"] sprintf("  %s deleted backlinks for %s\n", V["subtractions"], V["name"])
-            }
 
             if ( V["additions"] ) {
                 if ( V["additions"] < G["max"] ) {
@@ -182,18 +189,24 @@ function main(cfgfile		,V ,name) {
                     print V["out"] >> V["addtxt"] }
                 else {
                     V["emailtxt"] = V["emailtxt"] sprintf("\n  Additions over %s\n   List not sent in email nor added to %s\n   To see changes:\n\n", G["max"], V["addtxt"])
-                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" \"%s\"\n", V["oldtxt"], V["newtxt"])
+                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" -- \"%s\"\n", V["oldtxt"], V["newtxt"])
                 }
             }        
             if ( V["subtractions"] ) {
                 if ( V["subtractions"] < G["max"] ) {
-                    V["emailtxt"] = V["emailtxt"] sprintf("\n  Deletions (added to %s ):\n\n", V["subtxt"])
-                    V["out"] = sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", V["newtxt"], V["oldtxt"]))
-                    V["emailtxt"] = V["emailtxt"] V["out"] "\n"
-                    print V["out"] >> V["subtxt"] }
+                    V["out"] = subtractions(V["name"], V["newtxt"], V["oldtxt"])
+                    V["subtractions"] = countstr(V["out"], "\n")
+                    if ( V["subtractions"] > 0 ) {
+                        V["newflag"] = 1
+                        V["emailtxt"] = V["emailtxt"] sprintf("  %s deleted backlinks for %s\n", V["subtractions"], V["name"])
+                        V["emailtxt"] = V["emailtxt"] sprintf("\n  Deletions (added to %s ):\n\n", V["subtxt"])
+                        V["emailtxt"] = V["emailtxt"] V["out"] "\n"
+                        print V["out"] >> V["subtxt"]
+                    }
+                }
                 else {
                     V["emailtxt"] = V["emailtxt"] sprintf("\n  Deletions over %s\n   List not sent in email nor added to %s\n   To see changes:\n\n", G["max"], V["subtxt"])
-                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" \"%s\"\n", V["newtxt"], V["oldtxt"])
+                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" -- \"%s\"\n", V["newtxt"], V["oldtxt"])
                 }
             }        
 
@@ -274,6 +287,116 @@ function getcontinue(jsonin, method	,re,a,b,c) {
 }
 
 #
+#        subtractions - workaround for a bug (feature): Wikipedia database lag
+#                        For example, if an article is blanked by a vandal and a bot restores
+#                        it seconds later, the template backlinks (transclusions) may take days to be
+#                        restored due to lags in the wikipedia database, thus falsely reporting a deletion.
+#                        This will verify if the template is in fact in the article by doing a RegExp search of the wikisource.
+#
+function subtractions(entity, newtext, oldtext,
+        list,c,a,i,page,first,out,first2,out2) {
+
+        if(entity ~ /[Tt]emplate:|[Ff]ile:/) { # transclusions known to have database lags. Add others if seeing.
+            list = sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", newtext, oldtext))
+            c = split(list, a, "\n")
+            while(i++ < c) {
+                # Get wikisource of article where the entity was reportedly deleted
+                page = http2var("https://en.wikipedia.org/wiki/" gensub(" ","_","g",a[i]) "?action=raw")
+                # RE search article for entity. Include in deletion list if not found.
+                if(page !~ regstr(entity)) {
+                    if(first == 0) {
+                        out = a[i]
+                        first = 1
+                    }
+                    else {
+                        out = out "\n" a[i]
+                    }
+                }
+                else { # add article names back to newtext
+                    if(first2 == 0 ) {
+                        out2 = a[i]
+                        first2 = 1
+                    }
+                    else {
+                        out2 = out2 "\n" a[i]
+                    }
+                    debug("Warning (database update lag): entity \"" entity "\" is not in the backlinks of article \"" a[i] "\" but was found in the article wikisource. Not marked deleted.")
+                }
+            }
+            if(length(out2) > 0) {
+                print out2 >> newtext
+                close(newtext)
+            }
+            return out
+        }
+        else {
+            return sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", newtext, oldtext))
+        }
+}
+#
+# Build a RE for finding entity in wikisource
+#
+function regstr(entity,
+        a,c,entityname,bracketopen,bracketclose,namespace,re) {
+
+        bracketopen = "[[]"
+        bracketclose = "[]]"
+        c = split(entity,a,":")
+        entityname = regesc(strip(join(a,2,c,":")))
+        namespace = ""
+        if(entity ~ /^[Tt]emplate:/) {
+            bracketopen  = "[{]"
+            bracketclose = "[}]"
+        }
+        else if(entity ~ /^[Ff]ile:/) {
+            bracketopen = ""
+            bracketclose = ""
+        }
+        else if(entity ~ /^[Ww]ikipedia:|^[Ww][Pp]:/) {
+            namespace = "(Wikipedia|WP):"
+        }
+        else {
+            entityname = regesc(strip(entity))
+        }
+
+        re = bracketopen "[ ]{0,2}" namespace entityname "[ ]{0,2}([|]|" bracketclose ")"
+
+        return re
+}
+#
+# Regex escapes. Change "Dr." to "Dr[.]" .. Change "gutenberg" to "[Gg]utenberg"
+#
+function regesc(var,    c,a,i,out){
+
+        c = split(var,a,"")
+        while(i++ < c) {
+            if(i == 1) {
+                if(a[i] ~ /[[:alpha:]]/)
+                    out = "[" toupper(a[i]) tolower(a[i]) "]"
+                else
+                    out = a[i]
+                continue
+            }
+            out = out a[i]
+        }
+
+        #gsub("[[]","[[]",out) #don't
+        #gsub("[]]","[]]",out) #don't
+        #gsub("[^]","[^]",out) #? error
+        #gsub("[\]","[\]",out) #? error
+        gsub("[.]","[.]",out)
+        gsub("[?]","[?]",out)
+        gsub("[*]","[*]",out)
+        gsub("[(]","[(]",out)
+        gsub("[)]","[)]",out)
+        gsub("[$]","[$]",out)
+        gsub("[|]","[|]",out)
+        gsub("[+]","[+]",out)
+
+        return out
+}
+
+#
 # entity_exists - see if a page on Wikipedia exists
 #   eg. if ( ! entity_exists("Gutenberg author") ) print "Unknown page"
 #
@@ -283,7 +406,7 @@ function entity_exists(entity	,url,jsonin) {
         url = "http://en.wikipedia.org/w/api.php?action=query&titles=" entity "&format=json"
         jsonin = http2var(url)
         if(jsonin ~ "\"missing\"") 
-          return 0
+            return 0
         return 1
 }
 
@@ -314,7 +437,8 @@ function setup(files_system, files_local, b_path) {
 # third (optional) is the local dir.
 # Return 0 if fail. 
 #
-function files_verify(files_system, files_local, localdir,	a, i,emailtext,command) {
+function files_verify(files_system, files_local, localdir,
+        a,i,emailtext,command,missing) {
 
         emailtext = "\n"
 	missing = 0
@@ -377,7 +501,7 @@ function sys2var(command	,fish, scale, ship) {
 #
 function http2var(url) {
 
-        return sys2var("wget --no-check-certificate --user-agent=\"" G["api agent"] "\" -q -O- \"" url "\"")
+        return sys2var("wget --no-check-certificate --user-agent=\"" G["api agent"] "\" -q -O- -- \"" url "\"")
 
 }
 
@@ -451,6 +575,13 @@ function join2(arr, sep         ,i,lobster) {
             result = result sep lobster
         }
         return result
+}
+
+#
+# Count elements in a string along div boundary
+#
+function countstr(str, div,   a) {
+    return split(str, a, div)
 }
 
 #
