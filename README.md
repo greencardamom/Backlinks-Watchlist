@@ -1,7 +1,7 @@
 Backlinks Watchlist
 ===================
 by User:Green Cardamom (en.wikipedia.org)
-May 2015
+Copyright 2015, 2017
 MIT License
 
 Info
@@ -35,5 +35,6 @@ are at the top of the file. It will work on any Unix system that has GNU Awk 4.0
 Credits
 ==================
 Want to use MediaWiki API with Awk? Check out 'MediaWiki Awk API Library' 
+
 https://github.com/greencardamom/MediaWikiAwkAPI
 

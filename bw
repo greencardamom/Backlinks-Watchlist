@@ -1,13 +1,19 @@
-#!/bin/awk -f
+#!/bin/awk -bE
 
 # Backlinks Watchlist - monitor articles, templates etc.. on Wikipedia and email
 #                       when they are added-to or deleted-from other articles.
 #
+# https://github.com/greencardamom/Backlinks-Watchlist
 # Copyright (c) User:Green Cardamom (on en.wikipeda.org)
-# November 2015
+# December 2016
 # License: MIT 
 #
 # History:
+#
+#    01 Dec 2016  - Add shquote(), urlencodeawk() .. made safe for article names with unusual characters
+#                   Add apierror()  
+#                   Bug fix in &iucontinue (missing)
+#                   Change to awk -bE
 #    19 Nov 2015  - Bug fix: wrongly reports deletions of transcluded entities after a page blank
 #                            due to Wiki database update lags. New functions subtractions(), regstr() and regesc()
 #    10 Nov 2015  - Support for G["maxlag"] variable
@@ -38,7 +44,7 @@ BEGIN{
 #           3. Set the following configuration variables G["path"] (directory where this file is) 
 #               and G["email"] (an email address to send script output):
 
-G["path"]  = "/home/yourname/bw/"
+G["path"]  = "/home/path/bw/"
 G["email"] = "yourname@localhost"
 
 #           4. Create bw.cfg containing a list of "entities" to monitor. Example:
@@ -141,9 +147,9 @@ function main(cfgfile		,V ,name, br) {
             V["emailtxt"] = sprintf("  Backlinks Watchlist\n  ------------------------------\n")
 
             if ( file_exists(V["oldtxt"]) )
-                sys2var(sprintf("cp -- \"%s\" \"%s\"", V["oldtxt"], V["otptxt"]))
-            if ( file_exists(V["newtxt"]) ) {
-                sys2var(sprintf("mv -- \"%s\" \"%s\"", V["newtxt"], V["oldtxt"])) }
+                sys2var("cp -- " shquote(V["oldtxt"]) " " shquote(V["otptxt"]) )
+            if ( file_exists(V["newtxt"]) ) 
+                sys2var("mv -- " shquote(V["newtxt"]) " " shquote(V["oldtxt"]) ) 
             else {                 # New entity 
                 if( entity_exists(V["name"]) ) {
                     printf("") > V["oldtxt"]
@@ -159,22 +165,22 @@ function main(cfgfile		,V ,name, br) {
             debug("raw backlinks = " br)
   
             if ( br == 0 || br == "" ) {  # entity exists but has 0 backlinks or API maxlag timeout. Do nothing (restore files)
-                sys2var(sprintf("mv -- \"%s\" \"%s\"", V["oldtxt"], V["newtxt"]))
-                sys2var(sprintf("mv -- \"%s\" \"%s\"", V["otptxt"], V["oldtxt"]))
+                sys2var("mv -- " shquote(V["oldtxt"]) " " shquote(V["newtxt"]) )
+                sys2var("mv -- " shquote(V["otptxt"]) " " shquote(V["oldtxt"]) )
                 V["emailtxt"] = V["emailtxt"] "\nNo backlinks found for " G["name"] " - aborting.\n\nPossibly Maxlag exceeded. Try again when API server is less busy or modify G[\"maxlag\"] variable in script."
-                V["command"] = sprintf("mail -s \"Warning: Backlinks at Wikipedia (%s)\" -- %s", V["name"], G["email"])
+                V["command"] = sprintf("mail -s 'Warning: Backlinks at Wikipedia ('%s')' -- %s", shquote(V["name"]), G["email"])
                 print V["emailtxt"] | V["command"]
                 close(V["command"])
                 continue
             } else {
                 if ( file_exists(V["otptxt"]) ) { # all is good, cleanup 
                     close(V["otptxt"])
-                    sys2var(sprintf("rm -r -- \"%s\"", V["otptxt"]))
+                    sys2var("rm -r -- " shquote(V["otptxt"]) )
                 }
             }
               
-            V["additions"]    = sys2var(sprintf("grep -vxFc -f \"%s\" -- \"%s\"", V["oldtxt"], V["newtxt"]))
-            V["subtractions"] = sys2var(sprintf("grep -vxFc -f \"%s\" -- \"%s\"", V["newtxt"], V["oldtxt"]))
+            V["additions"]    = sys2var("grep -vxFc -f " shquote(V["oldtxt"]) " -- " shquote(V["newtxt"]))
+            V["subtractions"] = sys2var("grep -vxFc -f " shquote(V["newtxt"]) " -- " shquote(V["oldtxt"]))
 
             if ( V["additions"] ) {
               V["newflag"] = 1
@@ -184,12 +190,12 @@ function main(cfgfile		,V ,name, br) {
             if ( V["additions"] ) {
                 if ( V["additions"] < G["max"] ) {
                     V["emailtxt"] = V["emailtxt"] sprintf("\n  Additions (added to %s ):\n\n", V["addtxt"])
-                    V["out"] = sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", V["oldtxt"], V["newtxt"]))
-                    V["emailtxt"] = V["emailtxt"] V["out"] "\n"
+                    V["out"] = sys2var("grep -vxF -f " shquote(V["oldtxt"]) " -- " shquote(V["newtxt"]))
+                    V["emailtxt"] = V["emailtxt"] V["out"] "\n\n"
                     print V["out"] >> V["addtxt"] }
                 else {
                     V["emailtxt"] = V["emailtxt"] sprintf("\n  Additions over %s\n   List not sent in email nor added to %s\n   To see changes:\n\n", G["max"], V["addtxt"])
-                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" -- \"%s\"\n", V["oldtxt"], V["newtxt"])
+                    V["emailtxt"] = V["emailtxt"] "grep -vxF -f " shquote(V["oldtxt"]) " -- " shquote(V["newtxt"]) "\n\n"
                 }
             }        
             if ( V["subtractions"] ) {
@@ -200,24 +206,26 @@ function main(cfgfile		,V ,name, br) {
                         V["newflag"] = 1
                         V["emailtxt"] = V["emailtxt"] sprintf("  %s deleted backlinks for %s\n", V["subtractions"], V["name"])
                         V["emailtxt"] = V["emailtxt"] sprintf("\n  Deletions (added to %s ):\n\n", V["subtxt"])
-                        V["emailtxt"] = V["emailtxt"] V["out"] "\n"
+                        V["emailtxt"] = V["emailtxt"] V["out"] "\n\n"
                         print V["out"] >> V["subtxt"]
                     }
                 }
                 else {
                     V["emailtxt"] = V["emailtxt"] sprintf("\n  Deletions over %s\n   List not sent in email nor added to %s\n   To see changes:\n\n", G["max"], V["subtxt"])
-                    V["emailtxt"] = V["emailtxt"] sprintf("grep -vxF -f \"%s\" -- \"%s\"\n", V["newtxt"], V["oldtxt"])
+                    V["emailtxt"] = V["emailtxt"] "grep -vxF -f " shquote(V["newtxt"]) " -- " shquote(V["oldtxt"]) "\n\n"
                 }
             }        
 
             if ( V["newflag"] ) {
                 close(V["addtxt"])
                 close(V["subtxt"])
-                V["command"] = sprintf("mail -s \"New Backlinks at Wikipedia (%s)\" -- %s", V["name"], G["email"])
+                V["command"] = sprintf("mail -s 'New Backlinks at Wikipedia ('%s')' -- %s", shquote(V["name"]), G["email"])
                 print V["emailtxt"] | V["command"]
                 close(V["command"])
             }
         }   
+
+
 }
 
 #
@@ -230,16 +238,14 @@ function main(cfgfile		,V ,name, br) {
 #
 function backlinks(entity, outfile      ,url, blinks) {
 
-        gsub(" ","_",entity)
-
-        url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=&blfilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
+        url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" urlencodeawk(entity) "&blredirect&bllimit=250&continue=&blfilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
         blinks = getbacklinks(url, entity, "blcontinue") # normal backlinks
 
         if ( entity ~ "^Template:") {    # transclusion backlinks
-            url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&continue=&eilimit=500&format=json&utf8=1&maxlag=" G["maxlag"]
+            url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" urlencodeawk(entity) "&continue=&eilimit=500&continue=&format=json&utf8=1&maxlag=" G["maxlag"]
             blinks = blinks "\n" getbacklinks(url, entity, "eicontinue")
         } else if ( entity ~ "^File:") { # file backlinks
-            url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" entity "&iuredirect&iulimit=250&continue=&iufilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
+            url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" urlencodeawk(entity) "&iuredirect&iulimit=250&continue=&iufilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
             blinks = blinks "\n" getbacklinks(url, entity, "iucontinue")
         }
 
@@ -254,17 +260,19 @@ function backlinks(entity, outfile      ,url, blinks) {
 function getbacklinks(url, entity, method,      jsonin, jsonout, continuecode) {
 
         jsonin = http2var(url)
+        if(apierror(jsonin, "json") > 0)
+          return ""
         jsonout = json2var(jsonin)
         continuecode = getcontinue(jsonin, method)
 
         while ( continuecode ) {
 
             if ( method == "eicontinue" )
-                url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" entity "&eilimit=500&continue=-||&eicontinue=" continuecode "&format=json&utf8=1&maxlag=" G["maxlag"]
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=embeddedin&eititle=" urlencodeawk(entity) "&eilimit=500&continue=" urlencodeawk("-||") "&eicontinue=" urlencodeawk(continuecode) "&format=json&utf8=1&maxlag=" G["maxlag"]
             if ( method == "iucontinue" )
-                url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" entity "&iuredirect&iulimit=250&continue=&iufilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=imageusage&iutitle=" urlencodeawk(entity) "&iuredirect&iulimit=250&continue=" urlencodeawk("-||") "&iufilterredir=nonredirects&iucontinue=" urlencodeawk(continuecode) "&format=json&utf8=1&maxlag=" G["maxlag"]
             if ( method == "blcontinue" )
-                url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" entity "&blredirect&bllimit=250&continue=-||&blcontinue=" continuecode "&blfilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
+                url = "http://en.wikipedia.org/w/api.php?action=query&list=backlinks&bltitle=" urlencodeawk(entity) "&blredirect&bllimit=250&continue=" urlencodeawk("-||") "&blcontinue=" urlencodeawk(continuecode) "&blfilterredir=nonredirects&format=json&utf8=1&maxlag=" G["maxlag"]
 
             jsonin = http2var(url)
             jsonout = jsonout "\n" json2var(jsonin)
@@ -294,14 +302,15 @@ function getcontinue(jsonin, method	,re,a,b,c) {
 #                        This will verify if the template is in fact in the article by doing a RegExp search of the wikisource.
 #
 function subtractions(entity, newtext, oldtext,
+
         list,c,a,i,page,first,out,first2,out2) {
 
         if(entity ~ /[Tt]emplate:|[Ff]ile:/) { # transclusions known to have database lags. Add others if seeing.
-            list = sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", newtext, oldtext))
+            list = sys2var("grep -vxF -f " shquote(newtext) " -- " shquote(oldtext) )
             c = split(list, a, "\n")
             while(i++ < c) {
                 # Get wikisource of article where the entity was reportedly deleted
-                page = http2var("https://en.wikipedia.org/wiki/" gensub(" ","_","g",a[i]) "?action=raw")
+                page = http2var("https://en.wikipedia.org/w/index.php?title=" urlencodeawk(a[i]) "?action=raw")
                 # RE search article for entity. Include in deletion list if not found.
                 if(page !~ regstr(entity)) {
                     if(first == 0) {
@@ -330,13 +339,14 @@ function subtractions(entity, newtext, oldtext,
             return out
         }
         else {
-            return sys2var(sprintf("grep -vxF -f \"%s\" -- \"%s\"", newtext, oldtext))
+            return sys2var("grep -vxF -f " shquote(newtext) " -- " shquote(oldtext) )
         }
 }
 #
 # Build a RE for finding entity in wikisource
 #
 function regstr(entity,
+
         a,c,entityname,bracketopen,bracketclose,namespace,re) {
 
         bracketopen = "[[]"
@@ -402,8 +412,7 @@ function regesc(var,    c,a,i,out){
 #
 function entity_exists(entity	,url,jsonin) {
 
-        gsub(" ","_",entity)
-        url = "http://en.wikipedia.org/w/api.php?action=query&titles=" entity "&format=json"
+        url = "https://en.wikipedia.org/w/api.php?action=query&titles=" urlencodeawk(entity) "&format=json"
         jsonin = http2var(url)
         if(jsonin ~ "\"missing\"") 
             return 0
@@ -474,23 +483,22 @@ function files_verify(files_system, files_local, localdir,
         return 1
 }
 
-
 #
 # Run a system command and store result in a variable
 #   eg. googlepage = sys2var("wget -q -O- http://google.com")
 # Supports pipes inside command string. Stderr is sent to null.
 # If command fails return null
 #
-function sys2var(command	,fish, scale, ship) {
+function sys2var(command        ,catch, weight, ship) {
 
          debug("command= " command)
 
          command = command " 2>/dev/null"
-         while ( (command | getline fish) > 0 ) {
-             if ( ++scale == 1 )
-                 ship = fish
+         while ( (command | getline catch) > 0 ) {
+             if ( ++weight == 1 )
+                 ship = catch
              else
-                 ship = ship "\n" fish
+                 ship = ship "\n" catch
          }
          close(command)
          return ship
@@ -501,7 +509,7 @@ function sys2var(command	,fish, scale, ship) {
 #
 function http2var(url) {
 
-        return sys2var("wget --no-check-certificate --user-agent=\"" G["api agent"] "\" -q -O- -- \"" url "\"")
+        return sys2var("wget --no-check-certificate --user-agent=" shquote(G["api agent"]) " -q -O- -- " shquote(url) )
 
 }
 
@@ -521,15 +529,17 @@ function file_exists(file    ,line)
 }
 
 #
-# Uniq a list of \n separated names
+# Uniq a list of \n separated names obtained from Wikipedia API
 #
 function uniq(names,    b,c,i,x) {
 
         c = split(names, b, "\n")
         names = "" # free memory
         while (i++ < c) {
+            gsub(/\\["]/,"\"",b[i])      # convert \" to "
             if(b[i] ~ "for API usage") { # Max lag exceeded.
                 print "Max lag exceeded for " G["name"] " - aborting. Try again when API servers less busy or increase Maxlag." > "/dev/stderr"
+                debug("Warning (max lag exceeded): For " G["name"] " - aborting. Try again when API servers less busy or increase Maxlag.")
                 return
             }
             if(b[i] == "")
@@ -583,6 +593,62 @@ function join2(arr, sep         ,i,lobster) {
 function countstr(str, div,   a) {
     return split(str, a, div)
 }
+
+
+#
+# Basic check of API results for error
+#
+function apierror(input, type) {
+
+        if(length(input) < 5) {
+          return 1
+        }                  
+
+        if(type == "json") {
+          if(match(input, /"error"[:]{"code"[:]"[^\"]*","info"[:]"[^\"]*"/, code) > 0) {
+            return 1
+          }
+        }
+        else if(type == "xml") {
+          if(match(input, /error code[=]"[^\"]*" info[=]"[^\"]*"/, code) > 0) {
+            return 1
+          }
+        }
+        else
+          return
+}
+
+#
+# Percent encode a string for use in a URL
+#  Credit: Rosetta Code May 2015
+#  GNU Awk needs -b to encode extended ascii eg. "ł"
+#
+function urlencodeawk(str,  c, len, res, i, ord) {
+
+        for (i = 0; i <= 255; i++)
+                ord[sprintf("%c", i)] = i
+        len = length(str)      
+        res = ""
+        for (i = 1; i <= len; i++) {
+                c = substr(str, i, 1);
+                if (c ~ /[0-9A-Za-z]/)
+                        res = res c
+                else
+                        res = res "%" sprintf("%02X", ord[c])
+        }           
+        return res
+}        
+
+#
+# Make string safe for shell  
+# 
+function shquote (str,  safe) {    
+        safe = str
+        gsub(/'/, "'\\''", safe)
+        gsub(/’/, "'\\’'", safe)
+        return "'" safe "'"
+}
+
 
 #
 # Print debug to file G["debugout"]
