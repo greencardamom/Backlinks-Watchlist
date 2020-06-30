@@ -10,6 +10,7 @@
 #
 # History:
 #
+#    30 Jun 2020  - Bug fix in join2() and uniq()
 #    01 Dec 2016  - Add shquote(), urlencodeawk() .. made safe for article names with unusual characters
 #                   Add apierror()  
 #                   Bug fix in &iucontinue (missing)
@@ -533,9 +534,10 @@ function file_exists(file    ,line)
 #
 function uniq(names,    b,c,i,x) {
 
+        delete x
         c = split(names, b, "\n")
         names = "" # free memory
-        while (i++ < c) {
+        for(i = 1; i <= c; i++) {
             gsub(/\\["]/,"\"",b[i])      # convert \" to "
             if(b[i] ~ "for API usage") { # Max lag exceeded.
                 print "Max lag exceeded for " G["name"] " - aborting. Try again when API servers less busy or increase Maxlag." > "/dev/stderr"
@@ -544,8 +546,10 @@ function uniq(names,    b,c,i,x) {
             }
             if(b[i] == "")
                 continue
-            if(x[b[i]] == "")
-                x[b[i]] = b[i]
+            if(b[i] !~ G["types"] ) {
+              if(x[b[i]] == "")
+                  x[b[i]] = b[i]
+            }
         }
         delete b # free memory
         return join2(x,"\n")
@@ -575,7 +579,7 @@ function join(array, start, end, sep,    result, i)
 #
 # Merge an array of strings into a single string. Array indice are strings.
 #
-function join2(arr, sep         ,i,lobster) {
+function join2(arr, sep         ,i,lobster,result) {
 
         for ( lobster in arr ) {
             if(++i == 1) {
