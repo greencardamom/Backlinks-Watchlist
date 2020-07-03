@@ -10,6 +10,8 @@
 #
 # History:
 #
+#    03 Jul 2020  - Add support for "MAXLAGERROR"
+#    01 Jul 2020  - Bug fix in uniq()
 #    30 Jun 2020  - Bug fix in join2() and uniq()
 #    01 Dec 2016  - Add shquote(), urlencodeawk() .. made safe for article names with unusual characters
 #                   Add apierror()  
@@ -165,13 +167,15 @@ function main(cfgfile		,V ,name, br) {
 
             debug("raw backlinks = " br)
   
-            if ( br == 0 || br == "" ) {  # entity exists but has 0 backlinks or API maxlag timeout. Do nothing (restore files)
+            if ( br == -1 || br == 0 || br == "" ) {  # entity has maxlag error (-1) or no entries (0). Restore files, email if maxlag.
                 sys2var("mv -- " shquote(V["oldtxt"]) " " shquote(V["newtxt"]) )
                 sys2var("mv -- " shquote(V["otptxt"]) " " shquote(V["oldtxt"]) )
-                V["emailtxt"] = V["emailtxt"] "\nNo backlinks found for " G["name"] " - aborting.\n\nPossibly Maxlag exceeded. Try again when API server is less busy or modify G[\"maxlag\"] variable in script."
-                V["command"] = sprintf("mail -s 'Warning: Backlinks at Wikipedia ('%s')' -- %s", shquote(V["name"]), G["email"])
-                print V["emailtxt"] | V["command"]
-                close(V["command"])
+                if(br == -1) {
+                  V["emailtxt"] = V["emailtxt"] "\nNo backlinks found for " G["name"] " - aborting.\n\nPossibly Maxlag exceeded. Try again when API server is less busy or modify G[\"maxlag\"] variable in script."
+                  V["command"] = sprintf("mail -s 'Warning: Backlinks at Wikipedia ('%s')' -- %s", shquote(V["name"]), G["email"])
+                  print V["emailtxt"] | V["command"]
+                  close(V["command"])
+                }
                 continue
             } else {
                 if ( file_exists(V["otptxt"]) ) { # all is good, cleanup 
@@ -250,11 +254,12 @@ function backlinks(entity, outfile      ,url, blinks) {
             blinks = blinks "\n" getbacklinks(url, entity, "iucontinue")
         }
 
-        blinks = uniq(blinks)
-        if(length(blinks) > 0)
+        blinks = uniq(blinks, entity)
+        if(length(blinks) > 0 && blinks != "MAXLAGERROR")
           print blinks > outfile
-
         close(outfile)
+        if(blinks == "MAXLAGERROR")
+          return -1
         return length(blinks)
 
 }
@@ -515,6 +520,15 @@ function http2var(url) {
 }
 
 #
+# empty() - return 0 if string is 0-length
+#
+function empty(s) {
+    if (length(s) == 0)                
+        return 1       
+    return 0
+}
+
+#
 # Check if file exists, even zero-length.
 #   eg. if(! file_exists(filename)) {print "not exist"}
 #
@@ -532,7 +546,7 @@ function file_exists(file    ,line)
 #
 # Uniq a list of \n separated names obtained from Wikipedia API
 #
-function uniq(names,    b,c,i,x) {
+function uniq(names,entity,    b,c,i,x,ok) {
 
         delete x
         c = split(names, b, "\n")
@@ -542,13 +556,43 @@ function uniq(names,    b,c,i,x) {
             if(b[i] ~ "for API usage") { # Max lag exceeded.
                 print "Max lag exceeded for " G["name"] " - aborting. Try again when API servers less busy or increase Maxlag." > "/dev/stderr"
                 debug("Warning (max lag exceeded): For " G["name"] " - aborting. Try again when API servers less busy or increase Maxlag.")
-                return
+                return "MAXLAGERROR"
             }
             if(b[i] == "")
                 continue
-            if(b[i] !~ G["types"] ) {
-              if(x[b[i]] == "")
-                  x[b[i]] = b[i]
+
+            ok = 0
+            if(!empty(T[entity])) {
+              if(T[entity] == "ALL")
+                ok = 2
+              else
+                ok = 3
+            }
+            else {
+              if(G["types"] == "ALL")
+                ok = 2
+              else if(empty(G["types"]))
+                ok = 0
+              else
+                ok = 1
+            }
+            if(ok > 0) {
+              if(ok == 2) {
+                if(x[b[i]] == "")
+                    x[b[i]] = b[i]
+              }
+              if(ok == 3) {
+                if(b[i] !~ T[entity]) {
+                  if(x[b[i]] == "")
+                      x[b[i]] = b[i]
+                }
+              }
+              if(ok == 1) {
+                if(b[i] !~ G["types"]) {
+                  if(x[b[i]] == "")
+                      x[b[i]] = b[i]
+                }
+              }
             }
         }
         delete b # free memory
